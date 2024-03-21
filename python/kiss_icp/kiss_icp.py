@@ -29,6 +29,7 @@ from kiss_icp.preprocess import get_preprocessor
 from kiss_icp.registration import register_frame
 from kiss_icp.threshold import get_threshold_estimator
 from kiss_icp.voxelization import voxel_down_sample
+from kiss_icp.pybind import kiss_icp_pybind
 
 
 class KissICP:
@@ -39,10 +40,23 @@ class KissICP:
         self.adaptive_threshold = get_threshold_estimator(self.config)
         self.local_map = get_voxel_hash_map(self.config)
         self.preprocess = get_preprocessor(self.config)
+        self.map_update_disabled = False
 
-    def register_frame(self, frame, timestamps):
+    def disable_map_updates(self):
+        self.map_update_disabled = True
+
+    def enable_map_updates(self):
+        self.map_update_disabled = False
+
+    def initialize_local_map(self, frame, Tsm = np.eye(4)):
+        self.local_map.update(frame, Tsm)
+
+    def register_frame(self, frame, timestamps, initial_guess = None):
         # Apply motion compensation
-        frame = self.compensator.deskew_scan(frame, self.poses, timestamps)
+
+        # frame = kiss_icp_pybind._Vector3dVector(frame)
+        if not timestamps is None:
+            frame = self.compensator.deskew_scan(frame, self.poses, timestamps)
 
         # Preprocess the input cloud
         frame = self.preprocess(frame)
@@ -56,7 +70,9 @@ class KissICP:
         # Compute initial_guess for ICP
         prediction = self.get_prediction_model()
         last_pose = self.poses[-1] if self.poses else np.eye(4)
-        initial_guess = last_pose @ prediction
+
+        if initial_guess is None:
+            initial_guess = last_pose @ prediction
 
         # Run ICP
         new_pose = register_frame(
@@ -68,7 +84,10 @@ class KissICP:
         )
 
         self.adaptive_threshold.update_model_deviation(np.linalg.inv(initial_guess) @ new_pose)
-        self.local_map.update(frame_downsample, new_pose)
+
+        if not self.map_update_disabled:
+            self.local_map.update(frame_downsample, new_pose)
+        
         self.poses.append(new_pose)
         return frame, source
 
